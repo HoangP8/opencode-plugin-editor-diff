@@ -1,5 +1,5 @@
 {
-  "name": "@hoangp/opencode-plugin-editor-diff",
+  "name": "@hoangp8/opencode-plugin-editor-diff",
   "version": "0.0.1",
   "description": "OpenCode plugin that automatically shows visual diffs in your editor after file edits",
   "module": "index.ts",
@@ -8,17 +8,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HoangP8/opencode-plugin-editor-diff"
+    "url": "git+https://github.com/HoangP8/opencode-plugin-editor-diff.git"
   },
   "keywords": [
     "opencode",
     "plugin",
     "diff",
     "editor"
-  ],
-  "files": [
-    "index.ts",
-    "src"
   ],
   "devDependencies": {
     "@opencode-ai/plugin": "^1.1.44",
