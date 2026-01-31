@@ -12,6 +12,7 @@ interface BackupInfo {
   originalPath: string
   backupPath: string
   shown: boolean
+  isNewFile: boolean
 }
 
 const DEFAULT_CONFIG_CONTENT = `{
@@ -120,10 +121,14 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
 
   const showDiffForFile = async (fileName: string): Promise<void> => {
     const info = pendingBackups.get(fileName)
-    if (!info || info.shown || !info.backupPath) return
+    if (!info || info.shown) return
 
     try {
-      await runDiffCommand(info.backupPath, info.originalPath)
+      if (info.isNewFile) {
+        await runDiffCommand("/dev/null", info.originalPath)
+      } else if (info.backupPath) {
+        await runDiffCommand(info.backupPath, info.originalPath)
+      }
       info.shown = true
     } catch {
       // Ignore
@@ -134,7 +139,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     const root = await getProjectRoot()
     
     for (const [_fileName, info] of pendingBackups) {
-      if (info.backupPath) {
+      if (info.backupPath && !info.isNewFile) {
         try {
           await $`rm -f ${info.backupPath}`.quiet()
         } catch {
@@ -163,6 +168,15 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     // Delay cleanup to let editor open diff
     await new Promise(r => setTimeout(r, 500))
     await cleanupAllBackups()
+  }
+
+  const fileExists = async (filePath: string): Promise<boolean> => {
+    try {
+      await $`test -f ${filePath}`.quiet()
+      return true
+    } catch {
+      return false
+    }
   }
 
   // Load config once at startup
@@ -207,12 +221,17 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
           }
 
           if (!pendingBackups.has(fileName)) {
-            try {
+            const exists = await fileExists(filePath)
+            if (exists) {
               const backupPath = `${root}/.tmp/${fileName}`
-              await $`cp ${filePath} ${backupPath}`.quiet()
-              pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false })
-            } catch {
-              // New file
+              try {
+                await $`cp ${filePath} ${backupPath}`.quiet()
+                pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false, isNewFile: false })
+              } catch {
+                // Ignore backup failure
+              }
+            } else {
+              pendingBackups.set(fileName, { originalPath: filePath, backupPath: "", shown: false, isNewFile: true })
             }
           }
 
@@ -235,12 +254,17 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
         if (!root) return
         await ensureBackupDir(root)
 
-        try {
+        const exists = await fileExists(filePath)
+        if (exists) {
           const backupPath = `${root}/.tmp/${fileName}`
-          await $`cp ${filePath} ${backupPath}`.quiet()
-          pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false })
-        } catch {
-          // New file
+          try {
+            await $`cp ${filePath} ${backupPath}`.quiet()
+            pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false, isNewFile: false })
+          } catch {
+            // Ignore backup failure
+          }
+        } else {
+          pendingBackups.set(fileName, { originalPath: filePath, backupPath: "", shown: false, isNewFile: true })
         }
       }
 
