@@ -1,17 +1,17 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-interface EditedFile {
-  filePath: string
-  backupPath: string
-  isNew: boolean
-}
-
 type DiffEditor = "code" | "cursor" | "antigravity" | "windsurf"
 type DiffOS = "windows" | "linux"
 
 interface DiffConfig {
   editor?: DiffEditor
   os?: DiffOS
+}
+
+interface BackupInfo {
+  originalPath: string
+  backupPath: string
+  shown: boolean
 }
 
 const DEFAULT_CONFIG_CONTENT = `{
@@ -22,13 +22,13 @@ const DEFAULT_CONFIG_CONTENT = `{
 }
 `
 
-let editedFiles: EditedFile[] = []
-let pendingChanges = false
 let PROJECT_ROOT = ""
-let lastEditFilePath = ""
 let DIFF_COMMAND_TEMPLATE = ""
 let DIFF_CONFIG: DiffConfig | null = null
 let configInitialized = false
+let pendingBackups: Map<string, BackupInfo> = new Map()
+let lastEditedFile = ""
+let backupDirCreated = false
 
 const getFileName = (filePath: string): string => {
   const normalized = filePath.replace(/\\/g, "/")
@@ -42,9 +42,8 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   const getPlatform = () => getEnv()?.platform || "linux"
   const isWindowsPlatform = () => getPlatform() === "win32"
 
-  const getResolvedOS = async (): Promise<DiffOS> => {
-    const config = await loadDiffConfig()
-    if (config?.os) return config.os
+  const getResolvedOS = (): DiffOS => {
+    if (DIFF_CONFIG?.os) return DIFF_CONFIG.os
     return isWindowsPlatform() ? "windows" : "linux"
   }
 
@@ -65,7 +64,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
       .replace(/^\s*\/\/.*$/gm, "")
       .replace(/,\s*([}\]])/g, "$1")
 
-  const ensureConfigExists = async (): Promise<void> => {
+  const loadDiffConfig = async (): Promise<void> => {
     if (configInitialized) return
     configInitialized = true
 
@@ -74,70 +73,27 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
 
     try {
       await $`test -f ${configPath}`.quiet()
-    } catch {
-      const homeDir = getHomeDir()
-      if (homeDir) {
-        try {
-          await $`mkdir -p ${homeDir}/.config/opencode`.quiet()
-          await $`echo ${DEFAULT_CONFIG_CONTENT} > ${configPath}`.quiet()
-        } catch {
-          // Could not create config
-        }
-      }
-    }
-  }
-
-  const loadDiffConfig = async (): Promise<DiffConfig | null> => {
-    if (DIFF_CONFIG !== null) return DIFF_CONFIG
-
-    await ensureConfigExists()
-
-    const configPath = getDiffConfigPath()
-    if (!configPath) {
-      DIFF_CONFIG = null
-      return DIFF_CONFIG
-    }
-
-    try {
       const result = await $`cat ${configPath}`.quiet()
       const rawConfig = result.stdout?.toString() || ""
-      if (!rawConfig.trim()) {
-        DIFF_CONFIG = null
-        return DIFF_CONFIG
+      if (rawConfig.trim()) {
+        const parsed = JSON.parse(stripJsonComments(rawConfig)) as DiffConfig
+        DIFF_CONFIG = parsed
       }
-      const parsed = JSON.parse(stripJsonComments(rawConfig)) as DiffConfig
-      const validEditors: DiffEditor[] = ["code", "cursor", "antigravity", "windsurf"]
-      const validOS: DiffOS[] = ["windows", "linux"]
-      if (parsed.editor && !validEditors.includes(parsed.editor)) {
-        throw new Error(`Unsupported editor: "${parsed.editor}". Supported: code, cursor, antigravity, windsurf`)
-      }
-      if (parsed.os && !validOS.includes(parsed.os)) {
-        throw new Error(`Unsupported OS: "${parsed.os}". Supported: windows, linux`)
-      }
-      DIFF_CONFIG = parsed
-      return DIFF_CONFIG
     } catch {
-      DIFF_CONFIG = null
-      return DIFF_CONFIG
+      // Use defaults
     }
   }
 
-  const getDefaultCommandTemplate = (editor: DiffEditor, os: DiffOS) => {
-    const binary = os === "windows" ? `${editor}.cmd` : editor
-    return `${binary} --diff {old} {new}`
-  }
-
-  const getDiffCommandTemplate = async () => {
+  const getDiffCommandTemplate = (): string => {
     if (DIFF_COMMAND_TEMPLATE) return DIFF_COMMAND_TEMPLATE
-
-    const config = await loadDiffConfig()
-    const editor = config?.editor || "code"
-    const os = await getResolvedOS()
-    DIFF_COMMAND_TEMPLATE = getDefaultCommandTemplate(editor, os)
+    const editor = DIFF_CONFIG?.editor || "code"
+    const os = getResolvedOS()
+    const binary = os === "windows" ? `${editor}.cmd` : editor
+    DIFF_COMMAND_TEMPLATE = `${binary} --diff {old} {new}`
     return DIFF_COMMAND_TEMPLATE
   }
 
-  const getProjectRoot = async () => {
+  const getProjectRoot = async (): Promise<string> => {
     if (!PROJECT_ROOT) {
       const result = await $`pwd`.quiet()
       PROJECT_ROOT = result.stdout?.toString().trim() || ""
@@ -145,154 +101,153 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     return PROJECT_ROOT
   }
 
-  const createBackupDir = async (root: string) => {
-    if (root) {
-      await $`mkdir -p ${root}/.tmp`.quiet()
-    }
+  const ensureBackupDir = async (root: string): Promise<void> => {
+    if (backupDirCreated || !root) return
+    await $`mkdir -p ${root}/.tmp`.quiet()
+    backupDirCreated = true
   }
 
-  const getNullPath = (os: DiffOS) => (os === "windows" ? "NUL" : "/dev/null")
-
-  const buildCommand = (template: string, oldPath: string, newPath: string) =>
-    template.replaceAll("{old}", oldPath).replaceAll("{new}", newPath)
-
-  const runDiffCommand = async (command: string, os: DiffOS) => {
+  const runDiffCommand = async (backupPath: string, originalPath: string): Promise<void> => {
+    const template = getDiffCommandTemplate()
+    const command = template.replace("{old}", backupPath).replace("{new}", originalPath)
+    const os = getResolvedOS()
     if (os === "windows") {
       await $`cmd /c ${command}`
-      return
+    } else {
+      await $`sh -c ${command}`
     }
-    await $`bash -lc ${command}`
   }
 
-  const showDiffsAndCleanup = async () => {
-    if (editedFiles.length === 0) {
-      const root = await getProjectRoot()
-      if (root) {
-        try {
-          await $`rmdir ${root}/.tmp`.quiet()
-        } catch {
-          // Not empty or doesn't exist
-        }
-      }
-      return
-    }
+  const showDiffForFile = async (fileName: string): Promise<void> => {
+    const info = pendingBackups.get(fileName)
+    if (!info || info.shown || !info.backupPath) return
 
-    await new Promise((r) => setTimeout(r, 100))
-    const diffCommandTemplate = await getDiffCommandTemplate()
-    const os = await getResolvedOS()
+    try {
+      await runDiffCommand(info.backupPath, info.originalPath)
+      info.shown = true
+    } catch {
+      // Ignore
+    }
+  }
+
+  const cleanupAllBackups = async (): Promise<void> => {
     const root = await getProjectRoot()
-    const backupsToRemove: string[] = []
-    const nullPath = getNullPath(os)
-
-    for (const file of editedFiles) {
-      if (file.isNew && os === "windows") continue
-      try {
-        const oldPath = file.isNew ? nullPath : file.backupPath || nullPath
-        const command = buildCommand(diffCommandTemplate, oldPath, file.filePath)
-        await runDiffCommand(command, os)
-        if (!file.isNew && root && file.backupPath) {
-          backupsToRemove.push(file.backupPath)
+    
+    for (const [_fileName, info] of pendingBackups) {
+      if (info.backupPath) {
+        try {
+          await $`rm -f ${info.backupPath}`.quiet()
+        } catch {
+          // Ignore
         }
-      } catch {
-        // Continue to next file
       }
     }
 
-    if (root && backupsToRemove.length > 0) {
-      setTimeout(async () => {
-        for (const backupPath of backupsToRemove) {
-          try {
-            await $`rm -f ${backupPath}`.quiet()
-          } catch {
-            // Ignore
-          }
-        }
-        try {
-          await $`rmdir ${root}/.tmp`.quiet()
-        } catch {
-          // Not empty
-        }
-      }, 1000)
+    try {
+      await $`rm -rf ${root}/.tmp`.quiet()
+    } catch {
+      // Ignore
     }
 
-    editedFiles = []
-    pendingChanges = false
+    pendingBackups.clear()
+    lastEditedFile = ""
+    backupDirCreated = false
   }
+
+  const showRemainingDiffsAndCleanup = async (): Promise<void> => {
+    for (const [fileName, info] of pendingBackups) {
+      if (!info.shown) {
+        await showDiffForFile(fileName)
+      }
+    }
+    // Delay cleanup to let editor open diff
+    await new Promise(r => setTimeout(r, 500))
+    await cleanupAllBackups()
+  }
+
+  // Load config once at startup
+  await loadDiffConfig()
 
   return {
+    event: async ({ event }) => {
+      if (pendingBackups.size === 0) return
+      
+      if (event.type === "session.status") {
+        const status = (event as any).properties?.status
+        if (status?.type === "idle") {
+          await showRemainingDiffsAndCleanup()
+        }
+      } else if (event.type === "session.idle") {
+        await showRemainingDiffsAndCleanup()
+      }
+    },
+
     "tool.execute.before": async (input, output) => {
       const tool = input.tool
+      if (tool !== "edit" && tool !== "write" && tool !== "multiedit" && tool !== "patch") return
+
       const args = (input as any).args || output?.args || {}
 
-      const isEdit = tool === "edit"
-      const isWrite = tool === "write"
-      const isMultiEdit = tool === "multiedit"
-      const isPatch = tool === "patch"
-
-      if (isEdit || isWrite || isPatch) {
-        const filePath = args.file_path || args.filePath
-        if (filePath && typeof filePath === "string") {
-          lastEditFilePath = filePath
-          const root = await getProjectRoot()
-          const fileName = getFileName(filePath)
-          const backupPath = root ? `${root}/.tmp/${fileName}` : ""
-
-          await createBackupDir(root)
-
-          if (isWrite) {
-            try {
-              await $`cp ${filePath} ${backupPath}`.quiet()
-              editedFiles.push({ filePath, backupPath, isNew: false })
-            } catch {
-              editedFiles.push({ filePath, backupPath: "", isNew: true })
-            }
-            pendingChanges = true
-          } else if ((isEdit || isPatch) && root) {
-            try {
-              await $`cp ${filePath} ${backupPath}`.quiet()
-              editedFiles.push({ filePath, backupPath, isNew: false })
-            } catch {
-              editedFiles.push({ filePath, backupPath, isNew: false })
-            }
-            pendingChanges = true
-          }
-        }
-      }
-
-      if (isMultiEdit) {
+      if (tool === "multiedit") {
         const edits = args.edits
-        if (Array.isArray(edits)) {
-          const root = await getProjectRoot()
-          await createBackupDir(root)
+        if (!Array.isArray(edits)) return
 
-          for (const edit of edits) {
-            const filePath = edit?.file_path
-            if (filePath && typeof filePath === "string" && root) {
-              lastEditFilePath = filePath
-              const fileName = getFileName(filePath)
+        const root = await getProjectRoot()
+        if (!root) return
+        await ensureBackupDir(root)
+
+        for (const edit of edits) {
+          const filePath = edit?.file_path
+          if (!filePath || typeof filePath !== "string") continue
+
+          const fileName = getFileName(filePath)
+
+          if (lastEditedFile && lastEditedFile !== fileName) {
+            await showDiffForFile(lastEditedFile)
+          }
+
+          if (!pendingBackups.has(fileName)) {
+            try {
               const backupPath = `${root}/.tmp/${fileName}`
-              try {
-                await $`cp ${filePath} ${backupPath}`.quiet()
-                editedFiles.push({ filePath, backupPath, isNew: false })
-                pendingChanges = true
-              } catch {
-                // Ignore
-              }
+              await $`cp ${filePath} ${backupPath}`.quiet()
+              pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false })
+            } catch {
+              // New file
             }
           }
+
+          lastEditedFile = fileName
+        }
+        return
+      }
+
+      const filePath = args.file_path || args.filePath
+      if (!filePath || typeof filePath !== "string") return
+
+      const fileName = getFileName(filePath)
+
+      if (lastEditedFile && lastEditedFile !== fileName) {
+        await showDiffForFile(lastEditedFile)
+      }
+
+      if (!pendingBackups.has(fileName)) {
+        const root = await getProjectRoot()
+        if (!root) return
+        await ensureBackupDir(root)
+
+        try {
+          const backupPath = `${root}/.tmp/${fileName}`
+          await $`cp ${filePath} ${backupPath}`.quiet()
+          pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false })
+        } catch {
+          // New file
         }
       }
+
+      lastEditedFile = fileName
     },
 
-    "tool.execute.after": async (_input, _output) => {
-      if (pendingChanges) {
-        if (lastEditFilePath) {
-          editedFiles = editedFiles.filter((file) => file.filePath === lastEditFilePath)
-        }
-        await showDiffsAndCleanup()
-        lastEditFilePath = ""
-      }
-    },
+    "tool.execute.after": async () => {},
   }
 }
 
