@@ -48,6 +48,10 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     return isWindowsPlatform() ? "windows" : "linux"
   }
 
+  const getNullDevice = (): string => {
+    return getResolvedOS() === "windows" ? "NUL" : "/dev/null"
+  }
+
   const getHomeDir = () => {
     const env = getEnv()?.env
     return (env?.HOME || env?.USERPROFILE || "").trim()
@@ -125,7 +129,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
 
     try {
       if (info.isNewFile) {
-        await runDiffCommand("/dev/null", info.originalPath)
+        await runDiffCommand(getNullDevice(), info.originalPath)
       } else if (info.backupPath) {
         await runDiffCommand(info.backupPath, info.originalPath)
       }
