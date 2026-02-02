@@ -12,7 +12,7 @@ A temporary workaround using `.tmp` backups to show visual diffs in your editor 
 ```jsonc
 {
   // Pin version for faster startup
-  "plugin": ["@hoangp8/opencode-plugin-editor-diff@0.0.5"]
+  "plugin": ["@hoangp8/opencode-plugin-editor-diff@0.0.6"]
 }
 ```
 

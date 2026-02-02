@@ -24,6 +24,7 @@ const DEFAULT_CONFIG_CONTENT = `{
 `
 
 let PROJECT_ROOT = ""
+let BACKUP_DIR = ""
 let DIFF_COMMAND_TEMPLATE = ""
 let DIFF_CONFIG: DiffConfig | null = null
 let configInitialized = false
@@ -57,11 +58,17 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     return (env?.HOME || env?.USERPROFILE || "").trim()
   }
 
-  const getDiffConfigPath = () => {
-    const homeDir = getHomeDir()
-    if (!homeDir) return ""
-    return `${homeDir}/.config/opencode/diff.jsonc`
-  }
+const getDiffConfigPath = () => {
+  const homeDir = getHomeDir()
+  if (!homeDir) return ""
+  return `${homeDir}/.config/opencode/diff.jsonc`
+}
+
+const getDefaultBackupDir = (): string => {
+  const homeDir = getHomeDir()
+  if (!homeDir) return ""
+  return `${homeDir}/.config/opencode/.tmp`
+}
 
   const stripJsonComments = (value: string) =>
     value
@@ -106,11 +113,15 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     return PROJECT_ROOT
   }
 
-  const ensureBackupDir = async (root: string): Promise<void> => {
-    if (backupDirCreated || !root) return
-    await $`mkdir -p ${root}/.tmp`.quiet()
-    backupDirCreated = true
-  }
+const ensureBackupDir = async (): Promise<string> => {
+  if (backupDirCreated && BACKUP_DIR) return BACKUP_DIR
+  const backupDir = getDefaultBackupDir()
+  if (!backupDir) return ""
+  await $`mkdir -p ${backupDir}`.quiet()
+  backupDirCreated = true
+  BACKUP_DIR = backupDir
+  return backupDir
+}
 
   const runDiffCommand = async (backupPath: string, originalPath: string): Promise<void> => {
     const template = getDiffCommandTemplate()
@@ -139,29 +150,30 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     }
   }
 
-  const cleanupAllBackups = async (): Promise<void> => {
-    const root = await getProjectRoot()
-    
-    for (const [_fileName, info] of pendingBackups) {
-      if (info.backupPath && !info.isNewFile) {
-        try {
-          await $`rm -f ${info.backupPath}`.quiet()
-        } catch {
-          // Ignore
-        }
+const cleanupAllBackups = async (): Promise<void> => {
+  for (const [_fileName, info] of pendingBackups) {
+    if (info.backupPath && !info.isNewFile) {
+      try {
+        await $`rm -f ${info.backupPath}`.quiet()
+      } catch {
+        // Ignore
       }
     }
-
-    try {
-      await $`rm -rf ${root}/.tmp`.quiet()
-    } catch {
-      // Ignore
-    }
-
-    pendingBackups.clear()
-    lastEditedFile = ""
-    backupDirCreated = false
   }
+
+  try {
+    if (BACKUP_DIR) {
+      await $`rm -rf ${BACKUP_DIR}`.quiet()
+    }
+  } catch {
+    // Ignore
+  }
+
+  pendingBackups.clear()
+  lastEditedFile = ""
+  backupDirCreated = false
+  BACKUP_DIR = ""
+}
 
   const showRemainingDiffsAndCleanup = async (): Promise<void> => {
     for (const [fileName, info] of pendingBackups) {
@@ -210,9 +222,8 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
         const edits = args.edits
         if (!Array.isArray(edits)) return
 
-        const root = await getProjectRoot()
-        if (!root) return
-        await ensureBackupDir(root)
+        const backupDir = await ensureBackupDir()
+        if (!backupDir) return
 
         for (const edit of edits) {
           const filePath = edit?.file_path
@@ -227,7 +238,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
           if (!pendingBackups.has(fileName)) {
             const exists = await fileExists(filePath)
             if (exists) {
-              const backupPath = `${root}/.tmp/${fileName}`
+              const backupPath = `${backupDir}/${fileName}`
               try {
                 await $`cp ${filePath} ${backupPath}`.quiet()
                 pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false, isNewFile: false })
@@ -254,13 +265,12 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
       }
 
       if (!pendingBackups.has(fileName)) {
-        const root = await getProjectRoot()
-        if (!root) return
-        await ensureBackupDir(root)
+        const backupDir = await ensureBackupDir()
+        if (!backupDir) return
 
         const exists = await fileExists(filePath)
         if (exists) {
-          const backupPath = `${root}/.tmp/${fileName}`
+          const backupPath = `${backupDir}/${fileName}`
           try {
             await $`cp ${filePath} ${backupPath}`.quiet()
             pendingBackups.set(fileName, { originalPath: filePath, backupPath, shown: false, isNewFile: false })
