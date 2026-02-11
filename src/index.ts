@@ -1,11 +1,9 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
 type DiffEditor = "code" | "cursor" | "antigravity" | "windsurf"
-type DiffOS = "windows" | "linux"
 
 interface DiffConfig {
   editor?: DiffEditor | string
-  os?: DiffOS
 }
 
 interface BackupInfo {
@@ -22,14 +20,6 @@ interface PreEditSnapshot {
   cleanupBackup: boolean
 }
 
-const DEFAULT_CONFIG_CONTENT = `{
-  // Supported editors: "code", "cursor", "antigravity", "windsurf"
-  "editor": "code",
-  // Supported OS: "windows", "linux"
-  "os": "linux"
-}
-`
-
 let PROJECT_ROOT = ""
 let BACKUP_DIR = ""
 let DIFF_COMMAND_TEMPLATE = ""
@@ -45,11 +35,10 @@ let cleanupTimer: ReturnType<typeof setTimeout> | null = null
 
 const CLEANUP_GRACE_MS = 15000
 
-const normalizePathToKey = (filePath: string): string => filePath.replace(/\\/g, "/")
+const normalizePathToKey = (filePath: string): string => filePath
 
 const getBackupFileName = (filePath: string): string => {
-  const key = normalizePathToKey(filePath)
-  const parts = key.split("/").filter(Boolean)
+  const parts = filePath.split("/").filter(Boolean)
   const name = parts[parts.length - 1]
   if (!name) return "untitled"
   return name.replace(/[<>:"|?*]/g, "_")
@@ -83,21 +72,11 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   const getEnv = () =>
     (globalThis as { process?: { env?: Record<string, string>; platform?: string } })?.process
 
-  const getPlatform = () => getEnv()?.platform || "linux"
-  const isWindowsPlatform = () => getPlatform() === "win32"
-
-  const getResolvedOS = (): DiffOS => {
-    if (DIFF_CONFIG?.os) return DIFF_CONFIG.os
-    return isWindowsPlatform() ? "windows" : "linux"
-  }
-
-  const getNullDevice = (): string => {
-    return getResolvedOS() === "windows" ? "NUL" : "/dev/null"
-  }
+  const getNullDevice = (): string => "/dev/null"
 
   const getHomeDir = () => {
     const env = getEnv()?.env
-    return (env?.HOME || env?.USERPROFILE || "").trim()
+    return (env?.HOME || "").trim()
   }
 
   const getDiffConfigPath = () => {
@@ -141,9 +120,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   const getDiffCommandTemplate = (): string => {
     if (DIFF_COMMAND_TEMPLATE) return DIFF_COMMAND_TEMPLATE
     const editor = (DIFF_CONFIG?.editor || "code").trim().toLowerCase()
-    const os = getResolvedOS()
-    const binary = os === "windows" ? `${editor}.cmd` : editor
-    DIFF_COMMAND_TEMPLATE = `${binary} --diff {old} {new}`
+    DIFF_COMMAND_TEMPLATE = `${editor} --diff {old} {new}`
     return DIFF_COMMAND_TEMPLATE
   }
 
@@ -182,12 +159,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     const command = template
       .replace("{old}", shellQuote(backupPath))
       .replace("{new}", shellQuote(currentPath))
-    const os = getResolvedOS()
-    if (os === "windows") {
-      await $`cmd /c ${command}`
-    } else {
-      await $`sh -c ${command}`
-    }
+    await $`sh -c ${command}`
   }
 
   const showDiffs = async (backups: BackupInfo[]): Promise<BackupInfo[]> => {
