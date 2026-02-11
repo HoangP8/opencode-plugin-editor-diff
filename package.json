@@ -1,7 +1,7 @@
 {
   "name": "@hoangp8/opencode-plugin-editor-diff",
-  "version": "0.0.8",
-  "description": "OpenCode plugin that automatically shows visual diffs in your editor after file edits",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that shows visual diffs in your editor after file edits",
   "module": "index.ts",
   "type": "module",
   "author": "HoangP8",

@@ -20,6 +20,12 @@ interface PreEditSnapshot {
   cleanupBackup: boolean
 }
 
+const DEFAULT_CONFIG_CONTENT = `{
+  // Supported editors: "code", "cursor", "antigravity", "windsurf"
+  "editor": "code"
+}
+`
+
 let PROJECT_ROOT = ""
 let BACKUP_DIR = ""
 let DIFF_COMMAND_TEMPLATE = ""
@@ -105,7 +111,15 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     if (!configPath) return
 
     try {
-      await $`test -f ${configPath}`.quiet()
+      const exists = await $`test -f ${configPath}`.quiet().then(() => true).catch(() => false)
+      if (!exists) {
+        const configDir = getParentDir(configPath)
+        await $`mkdir -p ${configDir}`.quiet()
+        await $`echo ${DEFAULT_CONFIG_CONTENT.trim()} > ${configPath}`.quiet()
+        DIFF_CONFIG = JSON.parse(stripJsonComments(DEFAULT_CONFIG_CONTENT))
+        return
+      }
+
       const result = await $`cat ${configPath}`.quiet()
       const rawConfig = result.stdout?.toString() || ""
       if (rawConfig.trim()) {
