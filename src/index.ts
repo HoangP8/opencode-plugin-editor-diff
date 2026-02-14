@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-type DiffEditor = "code" | "cursor" | "antigravity" | "windsurf"
+type DiffEditor = "code" | "cursor" | "antigravity"
 
 interface DiffConfig {
   editor?: DiffEditor | string
@@ -21,12 +21,11 @@ interface PreEditSnapshot {
 }
 
 const DEFAULT_CONFIG_CONTENT = `{
-  // Supported editors: "code", "cursor", "antigravity", "windsurf"
+  // Supported editors: "code", "cursor", "antigravity"
   "editor": "code"
 }
 `
 
-let PROJECT_ROOT = ""
 let BACKUP_DIR = ""
 let DIFF_COMMAND_TEMPLATE = ""
 let DIFF_CONFIG: DiffConfig | null = null
@@ -35,7 +34,6 @@ let pendingBackupsByFile: Map<string, BackupInfo> = new Map()
 let shownBackupsAwaitingCleanup: BackupInfo[] = []
 let activeSnapshotsStack: PreEditSnapshot[][] = []
 let backupDirCreated = false
-let backupSequence = 0
 let shownBackupsLastUpdatedAt = 0
 let cleanupTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -138,14 +136,6 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     return DIFF_COMMAND_TEMPLATE
   }
 
-  const getProjectRoot = async (): Promise<string> => {
-    if (!PROJECT_ROOT) {
-      const result = await $`pwd`.quiet()
-      PROJECT_ROOT = result.stdout?.toString().trim() || ""
-    }
-    return PROJECT_ROOT
-  }
-
   const ensureBackupDir = async (): Promise<string> => {
     if (backupDirCreated && BACKUP_DIR) return BACKUP_DIR
     const backupDir = getDefaultBackupDir()
@@ -168,20 +158,25 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
 
   const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`
 
-  const runDiffCommand = async (backupPath: string, currentPath: string): Promise<void> => {
+  const runDiffCommand = async (backupPath: string, currentPath: string): Promise<boolean> => {
     const template = getDiffCommandTemplate()
     const command = template
       .replace("{old}", shellQuote(backupPath))
       .replace("{new}", shellQuote(currentPath))
-    await $`sh -c ${command}`
+
+    try {
+      await $`sh -c ${command}`.quiet()
+      return true
+    } catch {
+      return false
+    }
   }
 
   const showDiffs = async (backups: BackupInfo[]): Promise<BackupInfo[]> => {
     const notShown: BackupInfo[] = []
     for (const info of backups) {
-      try {
-        await runDiffCommand(info.backupPath, info.currentPath)
-      } catch {
+      const shown = await runDiffCommand(info.backupPath, info.currentPath)
+      if (!shown) {
         notShown.push(info)
       }
     }
@@ -191,6 +186,15 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   const removeFileQuietly = async (filePath: string): Promise<void> => {
     try {
       await $`rm -f ${filePath}`.quiet()
+    } catch {
+      // Ignore
+    }
+  }
+
+  const removeDirQuietly = async (dirPath: string): Promise<void> => {
+    if (!dirPath) return
+    try {
+      await $`rm -rf ${dirPath}`.quiet()
     } catch {
       // Ignore
     }
@@ -240,17 +244,20 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   }
 
   const resetBackupState = async (): Promise<void> => {
+    const previousBackupDir = BACKUP_DIR
+
     pendingBackupsByFile = new Map()
     shownBackupsAwaitingCleanup = []
     activeSnapshotsStack = []
     backupDirCreated = false
-    backupSequence = 0
     shownBackupsLastUpdatedAt = 0
     if (cleanupTimer) {
       clearTimeout(cleanupTimer)
       cleanupTimer = null
     }
     BACKUP_DIR = ""
+
+    await removeDirQuietly(previousBackupDir)
   }
 
   const flushBackups = async (backups: BackupInfo[]): Promise<void> => {
@@ -260,9 +267,7 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
     const shownBackups = backups.filter(info => !failedBackups.includes(info))
     queueShownBackupsForCleanup(shownBackups)
 
-    for (const failed of failedBackups) {
-      pendingBackupsByFile.set(failed.fileKey, failed)
-    }
+    await cleanupDiffFiles(failedBackups)
   }
 
   const flushBackupsExcept = async (activeFileKeys: Set<string>): Promise<void> => {
@@ -299,9 +304,15 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
 
   const showRemainingDiffsAndCleanup = async (): Promise<void> => {
     await flushAllBackups()
-    if (pendingBackupsByFile.size > 0) return
-
     await cleanupShownBackupsIfReady()
+
+    if (
+      pendingBackupsByFile.size === 0 &&
+      shownBackupsAwaitingCleanup.length === 0 &&
+      activeSnapshotsStack.length === 0
+    ) {
+      await resetBackupState()
+    }
   }
 
   const fileExists = async (filePath: string): Promise<boolean> => {
@@ -412,7 +423,6 @@ export const EditorDiffPlugin: Plugin = async ({ $ }) => {
   }
 
   await loadDiffConfig()
-  await getProjectRoot()
 
   return {
     event: async ({ event }) => {

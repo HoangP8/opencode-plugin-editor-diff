@@ -26,7 +26,7 @@ A temporary workaround using `.tmp` backups to show visual diffs in your editor 
 }
 ```
 
-- **editor**: `code` | `cursor` | `antigravity` | `windsurf` (default: `code`)
+- **editor**: `code` | `cursor` | `antigravity` (default: `code`)
 
 ## Note
 
