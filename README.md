@@ -12,7 +12,7 @@ A temporary workaround using `.tmp` backups to show visual diffs in your editor 
 ```jsonc
 {
   // Pin version for faster startup
-  "plugin": ["@hoangp8/opencode-plugin-editor-diff@0.1.0"]
+  "plugin": ["@hoangp8/opencode-plugin-editor-diff@0.1.1"]
 }
 ```
 
@@ -32,3 +32,5 @@ A temporary workaround using `.tmp` backups to show visual diffs in your editor 
 
 1. Editor diffs only show when edits are done (approved or auto-allowed), otherwise diffs appear in TUI only.
 2. I suggest enabling auto-edit, then you see the change, type `/undo` to revert, or feedback for further edits.
+3. The plugin works only when running OpenCode in the editor terminal (VS Code/Cursor), not in a standalone terminal (e.g., Command Prompt).
+4. Linux only supported.
